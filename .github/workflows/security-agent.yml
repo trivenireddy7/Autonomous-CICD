@@ -1,0 +1,56 @@
+name: Autonomous CI/CD Code Security Agent
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: security-agent-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  security-analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Skip when LLM secret is unavailable
+        if: ${{ secrets.LLM_API_KEY == '' }}
+        run: echo "LLM_API_KEY is unavailable. Fork pull requests are skipped to avoid exposing secrets."
+
+      - name: Analyze pull request
+        if: ${{ secrets.LLM_API_KEY != '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_API_URL: ${{ secrets.LLM_API_URL || vars.LLM_API_URL || 'https://api.openai.com/v1/chat/completions' }}
+          LLM_MODEL: ${{ vars.LLM_MODEL || 'gpt-4o-mini' }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -o pipefail
+          python -m src.main 2>&1 | tee security-agent.log
+
+      - name: Upload analysis log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-agent-log-${{ github.run_id }}
+          path: security-agent.log
+          if-no-files-found: ignore
